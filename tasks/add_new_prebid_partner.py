@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 
 def setup_partner(user_email, advertiser_name, order_name, placements, ad_units, sizes, bidder_code, prices,
-                  num_creatives, currency_code, line_item_format, video_ad_type=False, redirect_url=''):
+                  num_creatives, currency_code, line_item_format, name_prefix, video_ad_type=False, redirect_url=''):
   """
   Call all necessary DFP tasks for a new Prebid partner setup.
   """
@@ -73,21 +73,29 @@ def setup_partner(user_email, advertiser_name, order_name, placements, ad_units,
 
   # Create creatives.
   creative_configs = dfp.create_creatives.create_duplicate_creative_configs(
-      bidder_code, order_name, advertiser_id, num_creatives, video_ad_type, redirect_url)
+      name_prefix, order_name, advertiser_id, num_creatives, video_ad_type, redirect_url)
   creative_ids = dfp.create_creatives.create_creatives(creative_configs)
 
   # Get DFP key IDs for line item targeting.
-  hb_bidder_key_id = get_or_create_dfp_targeting_key('hb_bidder')
+  if bidder_code is not None: 
+    hb_bidder_key_id = get_or_create_dfp_targeting_key('hb_bidder')
+  else:
+    hb_bidder_key_id = None
+  
   hb_pb_key_id = get_or_create_dfp_targeting_key('hb_pb')
 
   # Instantiate DFP targeting value ID getters for the targeting keys.
-  HBBidderValueGetter = DFPValueIdGetter('hb_bidder')
+  if bidder_code is not None:
+    HBBidderValueGetter = DFPValueIdGetter('hb_bidder')
+  else:
+    HBBidderValueGetter = None
+  
   HBPBValueGetter = DFPValueIdGetter('hb_pb')
 
   # Create line items.
   line_items_config = create_line_item_configs(prices, order_id, placement_ids, ad_unit_ids, bidder_code, sizes,
                                                hb_bidder_key_id, hb_pb_key_id, currency_code, line_item_format,
-                                               HBBidderValueGetter, HBPBValueGetter, video_ad_type)
+                                               HBBidderValueGetter, HBPBValueGetter, video_ad_type, name_prefix)
   logger.info("Creating line items...")
   line_item_ids = dfp.create_line_items.create_line_items(line_items_config)
 
@@ -163,7 +171,7 @@ def get_or_create_dfp_targeting_key(name):
 
 def create_line_item_configs(prices, order_id, placement_ids, ad_unit_ids, bidder_code, sizes, hb_bidder_key_id,
                              hb_pb_key_id, currency_code, line_item_format, HBBidderValueGetter, HBPBValueGetter,
-                             video_ad_type):
+                             video_ad_type, name_prefix):
   """
   Create a line item config for each price bucket.
 
@@ -180,21 +188,25 @@ def create_line_item_configs(prices, order_id, placement_ids, ad_unit_ids, bidde
     HBBidderValueGetter (DFPValueIdGetter)
     HBPBValueGetter (DFPValueIdGetter)
     video_ad_type (bool)
+	name_prefix (str)
   Returns:
     an array of objects: the array of DFP line item configurations
   """
 
   # The DFP targeting value ID for this `hb_bidder` code.
-  hb_bidder_value_id = HBBidderValueGetter.get_value_id(bidder_code)
+  if HBBidderValueGetter is not None:
+    hb_bidder_value_id = HBBidderValueGetter.get_value_id(bidder_code)
+  else:
+    hb_bidder_value_id = None
 
   line_items_config = []
   for price in prices:
 
     price_str = num_to_str(micro_amount_to_num(price))
 
-    # Autogenerate the line item name.
+    # Autogenerate the line item name. - hack to help w/ bidder_code = None
     line_item_name = line_item_format.format(
-      bidder_code=bidder_code,
+      bidder_code=name_prefix,
       price=price_str
     )
 
@@ -284,10 +296,8 @@ def main():
 
   video_ad_type = getattr(settings, 'DFP_VIDEO_AD_TYPE', False)
   vast_redirect_url = getattr(settings, 'DFP_VAST_REDIRECT_URL', '')
-
   if video_ad_type is True and len(vast_redirect_url) < 1:
     raise BadSettingException('When setting "DFP_VIDEO_AD_TYPE" to "True", please also set "DFP_VAST_REDIRECT_URL".')
-
   if ad_units is None and placements is None:
     raise MissingSettingException('DFP_TARGETED_PLACEMENT_NAMES or DFP_TARGETED_AD_UNIT_NAMES')
   elif (placements is None or len(placements) < 1) and (ad_units is None or len(ad_units) < 1):
@@ -314,8 +324,8 @@ def main():
   )
 
   bidder_code = getattr(settings, 'PREBID_BIDDER_CODE', None)
-  if bidder_code is None:
-    raise MissingSettingException('PREBID_BIDDER_CODE')
+
+  name_prefix = getattr(settings, 'DFP_NAME_PREFIX', None)
 
   price_buckets = getattr(settings, 'PREBID_PRICE_BUCKETS', None)
   if price_buckets is None:
@@ -339,6 +349,7 @@ def main():
       {name_start_format}hb_bidder{format_end} = {value_start_format}{bidder_code}{format_end}
       {name_start_format}placements{format_end} = {value_start_format}{placements}{format_end}
       {name_start_format}ad units{format_end} = {value_start_format}{ad_units}{format_end}
+
     """.format(
       num_line_items = len(prices),
       order_name=order_name,
@@ -358,7 +369,6 @@ def main():
     logger.info(
     u"""    Line items will have VAST redirect creatives with redirect URL:
       {value_start_format}{redirect_url}{format_end}
-
     """.format(
       redirect_url=vast_redirect_url,
       value_start_format=color.BLUE,
@@ -367,16 +377,14 @@ def main():
   else:
     logger.info(
     u"""    Line items will have third party creatives based on snippet.html content.
-
     """)
-
   ok = input('Is this correct? (y/n)\n')
 
   if ok != 'y':
     logger.info('Exiting.')
     return
 
-  setup_partner(user_email, advertiser_name, order_name, placements, ad_units, sizes, bidder_code, prices, num_creatives, currency_code, line_item_format, video_ad_type, vast_redirect_url)
+  setup_partner(user_email, advertiser_name, order_name, placements, ad_units, sizes, bidder_code, prices, num_creatives, currency_code, line_item_format, name_prefix, video_ad_type, vast_redirect_url)
 
 if __name__ == '__main__':
   main()

@@ -74,6 +74,9 @@ DFP_USE_EXISTING_ORDER_IF_EXISTS = False
 # This should be specified in python's format syntax.
 # DFP_LINE_ITEM_FORMAT = u'{bidder_code}: HB ${price:0>5}'
 
+# Optional format for line item Name
+DFP_NAME_PREFIX = 'Saambaa'
+
 #########################################################################
 # PREBID SETTINGS
 #########################################################################
